@@ -14,6 +14,7 @@ import numpy as np
 import pygame
 import pygame.gfxdraw
 from python_ugv_sim.utils import environment, vehicles
+import pdb
 
 # <------------------------- EKF SLAM STUFF --------------------------------->
 # Sim Parameters
@@ -27,11 +28,15 @@ landmarks = [(12,12),
              (15,10),
              (9,1)]
 
+R = np.diag([0.001,0.001,0.0])
+
 # Noise parameters
 
 # Variables
-mu = np.zeros((n_state+2*n_landmarks,1)) # estimation of state and landmarks
+mu = np.empty((n_state+2*n_landmarks,1)) # estimation of state and landmarks
 sigma = np.empty((n_state+2*n_landmarks,n_state+2*n_landmarks)) # standard deviation of state and landmark uncertainty
+
+mu[:], sigma[:] = np.nan, np.nan
 
 # Helpful matrices
 global Fx
@@ -54,13 +59,23 @@ def prediction_update(mu,sigma,u,dt):
     global Fx
     px,py,theta = mu[0],mu[1],mu[2]
     v,w = u[0],u[1]
+    # Update mu
     state_model_mat = np.zeros((3,1))
     state_model_mat[0] = -(v/w)*np.sin(theta)+(v/w)*np.sin(theta+w*dt) if w>0.01 else v*np.cos(theta)*dt
     state_model_mat[1] = (v/w)*np.cos(theta)-(v/w)*np.cos(theta+w*dt) if w>0.01 else v*np.sin(theta)*dt
     state_model_mat[2] = w*dt
-    # Update mu and sigma
     mu = mu + np.matmul(np.transpose(Fx),state_model_mat)
+    # Update sigma
+    state_jacobian = np.zeros((3,3))
+    state_jacobian[0,2] = (v/w)*np.cos(theta) - (v/w)*np.cos(theta+w*dt) if w>0.1 else -v*np.sin(theta)*dt
+    state_jacobian[1,2] = (v/w)*np.sin(theta) - (v/w)*np.sin(theta+w*dt) if w>0.1 else v*np.cos(theta)*dt
+    G = np.eye(sigma.shape[0]) + np.transpose(Fx).dot(state_jacobian).dot(Fx)
+    sigma_old = sigma # Trick for the multiplication to work out
+    sigma = G.dot(np.nan_to_num(sigma)).dot(np.transpose(G)) + np.transpose(Fx).dot(R).dot(Fx)
+    sigma[np.isnan(sigma_old)] = np.nan # Anything that was nan before should be nan now
+    # pdb.set_trace()
     return mu,sigma
+    
 def measurement_update(mu,sigma,z):
 
     return mu,sigma
@@ -69,7 +84,7 @@ def measurement_update(mu,sigma,z):
 
 # Plotting functions
 def show_robot_estimate(mu,sigma,env):
-    px,py,sigmax,sigmay = mu[0],mu[1],1,1
+    px,py,sigmax,sigmay = mu[0],mu[1],sigma[0,0],sigma[1,1]
     px_pixel,py_pixel = env.position2pixel((px,py))
     sigmax_pixel,sigmay_pixel = env.dist2pixellen(sigmax), env.dist2pixellen(sigmay)
     pygame.gfxdraw.aaellipse(env.get_pygame_surface(),px_pixel,py_pixel,sigmax_pixel,sigmay_pixel,(255,0,0))
@@ -101,9 +116,9 @@ if __name__ == '__main__':
     # Initialize and display environment
     env = environment.Environment(map_image_path="./python_ugv_sim/maps/map_blank.png")
 
-    # Initialize robot state estimate
+    # Initialize robot state estimate and sigma
     mu[0:3] = np.expand_dims(x_init,axis=1)
-    
+    sigma[0:3,0:3] = 0.1*np.eye(3) 
     running = True
     u = np.array([0.,0.]) # Controls: u[0] = forward velocity, u[1] = angular velocity
     while running:
