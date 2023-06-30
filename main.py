@@ -28,7 +28,8 @@ landmarks = [(12,12),
              (15,10),
              (9,1)]
 
-R = np.diag([0.001,0.001,0.0])
+R = np.diag([0.001,0.001,0.0]) # sigma_x, sigma_y, sigma_theta
+Q = np.diag([0.1,0.1]) # sigma_r, sigma_phi
 
 # Noise parameters
 
@@ -39,24 +40,22 @@ sigma = np.empty((n_state+2*n_landmarks,n_state+2*n_landmarks)) # standard devia
 mu[:], sigma[:] = np.nan, np.nan
 
 # Helpful matrices
-global Fx
 Fx = np.block([[np.eye(3),np.zeros((3,2*n_landmarks))]])
 
 # Measurement function
 def sim_measurement(x,landmarks):
     zs = []
-    for landmark in landmarks:
+    for (lidx,landmark) in enumerate(landmarks):
         lx,ly = landmark
         dist = np.linalg.norm(x[0:2]-np.array([lx,ly]))
-        theta = np.arctan2(ly-x[1],lx-x[0]) - x[2]
-        theta = np.arctan2(np.sin(theta),np.cos(theta))
+        phi = np.arctan2(ly-x[1],lx-x[0]) - x[2]
+        phi = np.arctan2(np.sin(phi),np.cos(phi))
         if dist<robot_fov:
-            zs.append((dist,theta))
+            zs.append((dist,phi,lidx))
     return zs
 
 # EKF SLAM steps
 def prediction_update(mu,sigma,u,dt):
-    global Fx
     px,py,theta = mu[0],mu[1],mu[2]
     v,w = u[0],u[1]
     # Update mu
@@ -71,13 +70,24 @@ def prediction_update(mu,sigma,u,dt):
     state_jacobian[1,2] = (v/w)*np.sin(theta) - (v/w)*np.sin(theta+w*dt) if w>0.1 else v*np.cos(theta)*dt
     G = np.eye(sigma.shape[0]) + np.transpose(Fx).dot(state_jacobian).dot(Fx)
     sigma_old = sigma # Trick for the multiplication to work out
+    (eigvals,eigvecs) = np.linalg.eig(G.dot(np.nan_to_num(sigma)).dot(np.transpose(G)))
+    print(eigvals[0])
     sigma = G.dot(np.nan_to_num(sigma)).dot(np.transpose(G)) + np.transpose(Fx).dot(R).dot(Fx)
     sigma[np.isnan(sigma_old)] = np.nan # Anything that was nan before should be nan now
+    # print(sigma[0,0])
     # pdb.set_trace()
     return mu,sigma
     
-def measurement_update(mu,sigma,z):
-
+def measurement_update(mu,sigma,zs):
+    px,py,theta = mu[0],mu[1],mu[2]
+    for z in zs:
+        (dist,phi,lidx) = z
+        mu_landmark = mu[3+lidx*2,:3+lidx*2+2]
+        if np.isnan(mu_landmark[0]):
+            mu_landmark[0] = px + dist*np.cos(phi+theta)
+            mu_landmark[1] = py + dist*np.sin(phi+theta)
+            mu[3+lidx*2,:3+lidx*2+2] = mu_landmark
+        delta  = np.array([])
     return mu,sigma
 # <------------------------- EKF SLAM STUFF --------------------------------->
 
@@ -85,10 +95,16 @@ def measurement_update(mu,sigma,z):
 # Plotting functions
 def show_robot_estimate(mu,sigma,env):
     px,py,sigmax,sigmay = mu[0],mu[1],sigma[0,0],sigma[1,1]
-    px_pixel,py_pixel = env.position2pixel((px,py))
-    sigmax_pixel,sigmay_pixel = env.dist2pixellen(sigmax), env.dist2pixellen(sigmay)
-    pygame.gfxdraw.aaellipse(env.get_pygame_surface(),px_pixel,py_pixel,sigmax_pixel,sigmay_pixel,(255,0,0))
-    pass
+
+    p_pixel = env.position2pixel((px,py))
+    eigenvals,angle = sigma2transform(sigma[0:2,0:2])
+    sigma_pixel = env.dist2pixellen(eigenvals[0]), env.dist2pixellen(eigenvals[1])
+    show_uncertainty_ellipse(env,p_pixel,sigma_pixel,angle)
+
+    # px_pixel,py_pixel = env.position2pixel((px,py))
+    # sigmax_pixel,sigmay_pixel = env.dist2pixellen(sigmax), env.dist2pixellen(sigmay)
+    # pygame.gfxdraw.aaellipse(env.get_pygame_surface(),px_pixel,py_pixel,sigmax_pixel,sigmay_pixel,(255,0,0))
+    
 def show_landmark_location(landmarks,env):
     for landmark in landmarks:
         lx_pixel, ly_pixel = env.position2pixel(landmark)
@@ -98,10 +114,30 @@ def show_measurements(x,zs,env):
     rx,ry = x[0], x[1]
     rx_pix, ry_pix = env.position2pixel((rx,ry))
     for z in zs:
-        dist,theta = z
+        dist,theta,lidx = z
         lx,ly = x[0]+dist*np.cos(theta+x[2]),x[1]+dist*np.sin(theta+x[2])
         lx_pix,ly_pix = env.position2pixel((lx,ly))
         pygame.gfxdraw.line(env.get_pygame_surface(),rx_pix,ry_pix,lx_pix,ly_pix,(155,155,155))
+def sigma2transform(sigma):
+    [eigenvals,eigenvecs] = np.linalg.eig(sigma)
+    angle = 180.*np.arctan2(eigenvecs[1][0],eigenvecs[0][0])/np.pi
+    return eigenvals, angle
+def show_uncertainty_ellipse(env,center,width,angle):
+    target_rect = pygame.Rect(center[0]-int(width[0]/2),center[1]-int(width[1]/2),width[0],width[1])
+    # target_rect.center = center
+    # target_rect.size = width
+    # pdb.set_trace()
+    shape_surf = pygame.Surface(target_rect.size, pygame.SRCALPHA)
+    pygame.draw.ellipse(shape_surf, env.red, (0, 0, *target_rect.size), 2)
+    rotated_surf = pygame.transform.rotate(shape_surf, angle)
+    env.get_pygame_surface().blit(rotated_surf, rotated_surf.get_rect(center = target_rect.center))
+
+def draw_ellipse_angle(surface, color, rect, angle, width=0):
+    target_rect = pygame.Rect(rect)
+    shape_surf = pygame.Surface(target_rect.size, pygame.SRCALPHA)
+    pygame.draw.ellipse(shape_surf, color, (0, 0, *target_rect.size), width)
+    rotated_surf = pygame.transform.rotate(shape_surf, angle)
+    surface.blit(rotated_surf, rotated_surf.get_rect(center = target_rect.center))
 
 if __name__ == '__main__':
 
@@ -134,8 +170,12 @@ if __name__ == '__main__':
         mu, sigma = prediction_update(mu,sigma,u,dt)
         # Plotting
         env.show_map() # Re-blit map
-        env.show_robot(robot) # Re-blit robot
+        # Show measurements
         show_measurements(robot.get_pose(),zs,env)
-        show_robot_estimate(mu,sigma,env)
+        # Show actual locations of robot and landmarks
+        env.show_robot(robot) # Re-blit robot
         show_landmark_location(landmarks,env)
+        # Show estimates of robot and landmarks (estimate and uncertainty)
+        show_robot_estimate(mu,sigma,env)
+
         pygame.display.update() # Update display
