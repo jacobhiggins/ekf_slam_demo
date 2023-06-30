@@ -35,9 +35,10 @@ Q = np.diag([0.1,0.1]) # sigma_r, sigma_phi
 
 # Variables
 mu = np.empty((n_state+2*n_landmarks,1)) # estimation of state and landmarks
-sigma = np.empty((n_state+2*n_landmarks,n_state+2*n_landmarks)) # standard deviation of state and landmark uncertainty
+sigma = np.zeros((n_state+2*n_landmarks,n_state+2*n_landmarks)) # standard deviation of state and landmark uncertainty
 
-mu[:], sigma[:] = np.nan, np.nan
+mu[:] = np.nan
+np.fill_diagonal(sigma,1000)
 
 # Helpful matrices
 Fx = np.block([[np.eye(3),np.zeros((3,2*n_landmarks))]])
@@ -56,6 +57,7 @@ def sim_measurement(x,landmarks):
 
 # EKF SLAM steps
 def prediction_update(mu,sigma,u,dt):
+    
     px,py,theta = mu[0],mu[1],mu[2]
     v,w = u[0],u[1]
     # Update mu
@@ -69,25 +71,46 @@ def prediction_update(mu,sigma,u,dt):
     state_jacobian[0,2] = (v/w)*np.cos(theta) - (v/w)*np.cos(theta+w*dt) if w>0.1 else -v*np.sin(theta)*dt
     state_jacobian[1,2] = (v/w)*np.sin(theta) - (v/w)*np.sin(theta+w*dt) if w>0.1 else v*np.cos(theta)*dt
     G = np.eye(sigma.shape[0]) + np.transpose(Fx).dot(state_jacobian).dot(Fx)
-    sigma_old = sigma # Trick for the multiplication to work out
-    (eigvals,eigvecs) = np.linalg.eig(G.dot(np.nan_to_num(sigma)).dot(np.transpose(G)))
-    print(eigvals[0])
-    sigma = G.dot(np.nan_to_num(sigma)).dot(np.transpose(G)) + np.transpose(Fx).dot(R).dot(Fx)
-    sigma[np.isnan(sigma_old)] = np.nan # Anything that was nan before should be nan now
-    # print(sigma[0,0])
-    # pdb.set_trace()
+    sigma = G.dot(sigma).dot(np.transpose(G)) + np.transpose(Fx).dot(R).dot(Fx)
+    # sigma_old = sigma # Trick for the multiplication to work out
+    # sigma = G.dot(np.nan_to_num(sigma)).dot(np.transpose(G)) + np.transpose(Fx).dot(R).dot(Fx)
+    # sigma[np.isnan(sigma_old)] = np.nan # Anything that was nan before should be nan now
     return mu,sigma
     
 def measurement_update(mu,sigma,zs):
-    px,py,theta = mu[0],mu[1],mu[2]
+    px,py,theta = mu[0,0],mu[1,0],mu[2,0]
+    delta_zs = [np.zeros((2,1)) for lidx in range(n_landmarks)]
+    Ks = [np.zeros((mu.shape[0],2)) for lidx in range(n_landmarks)]
+    Hs = [np.zeros((2,mu.shape[0])) for lidx in range(n_landmarks)]
     for z in zs:
         (dist,phi,lidx) = z
-        mu_landmark = mu[3+lidx*2,:3+lidx*2+2]
+        mu_landmark = mu[3+lidx*2:3+lidx*2+2]
         if np.isnan(mu_landmark[0]):
             mu_landmark[0] = px + dist*np.cos(phi+theta)
             mu_landmark[1] = py + dist*np.sin(phi+theta)
-            mu[3+lidx*2,:3+lidx*2+2] = mu_landmark
-        delta  = np.array([])
+            mu[3+lidx*2:3+lidx*2+2] = mu_landmark
+        delta  = mu_landmark - np.array([[px],[py]])
+        q = np.linalg.norm(delta)**2
+        # Estimated and actual observation for this landmark
+        z_est_arr = np.array([[np.sqrt(q)],[np.arctan2(delta[1,0],delta[0,0])-theta]])
+        z_act_arr = np.array([[dist],[phi]])
+        delta_zs[lidx] = z_act_arr-z_est_arr
+        # Get matrices
+        Fxj = np.block([[Fx],[np.zeros((2,Fx.shape[1]))]])
+        Fxj[3:5,3+2*lidx:3+2*lidx+2] = np.eye(2)
+        H = np.array([[-delta[0,0]/np.sqrt(q),-delta[1,0]/np.sqrt(1),0,delta[0,0]/np.sqrt(q),delta[1,0]/np.sqrt(q)],\
+                      [delta[1,0]/q,-delta[0,0]/q,-1,-delta[1,0]/q,-delta[0,0]/q]])
+        H = H.dot(Fxj)
+        Hs[lidx] = H
+        Ks[lidx] = sigma.dot(np.transpose(H))*np.linalg.inv(H.dot(sigma).dot(np.transpose(H)) + Q)
+    mu_alteration = np.zeros(mu.shape)
+    sigma_alteration = np.eye(sigma.shape[0])
+    for lidx in range(n_landmarks):
+        mu_alteration += Ks[lidx].dot(delta_zs[lidx])
+        # pdb.set_trace()
+        sigma_alteration -= Ks[lidx].dot(Hs[lidx])
+    mu = mu + mu_alteration
+    sigma = sigma_alteration.dot(sigma)
     return mu,sigma
 # <------------------------- EKF SLAM STUFF --------------------------------->
 
@@ -168,6 +191,7 @@ if __name__ == '__main__':
         zs = sim_measurement(robot.get_pose(),landmarks)
         # EKF Slam Logic
         mu, sigma = prediction_update(mu,sigma,u,dt)
+        mu, sigma = measurement_update(mu,sigma,zs)
         # Plotting
         env.show_map() # Re-blit map
         # Show measurements
