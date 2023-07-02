@@ -46,8 +46,8 @@ landmarks = [(4,4),
 n_landmarks = len(landmarks)
 
 # ---> Noise parameters
-R = np.diag([0.01,0.01,0.005]) # sigma_x, sigma_y, sigma_theta
-Q = np.diag([0.003,0.01]) # sigma_r, sigma_phi
+R = np.diag([0.002,0.002,0.0005]) # sigma_x, sigma_y, sigma_theta
+Q = np.diag([0.003,0.005]) # sigma_r, sigma_phi
 
 # ---> EKF Estimation Variables
 mu = np.zeros((n_state+2*n_landmarks,1)) # State estimate (robot pose and landmark positions)
@@ -165,59 +165,84 @@ def measurement_update(mu,sigma,zs):
 # <------------------------- EKF SLAM STUFF --------------------------------->
 
 
-# Plotting functions
+# <------------------------- PLOTTING STUFF --------------------------------->
 def show_robot_estimate(mu,sigma,env):
+    '''
+    Visualize estimated position and uncertainty of the robot
+    Inputs:
+     - mu: state estimate (robot pose and landmark positions)
+     - sigma: state uncertainty (covariance matrix)
+     - env: Environment class (from python_ugv_sim)
+    '''
     rx,ry = mu[0],mu[1]
-    p_pixel = env.position2pixel((rx,ry))
-    eigenvals,angle = sigma2transform(sigma[0:2,0:2])
-    sigma_pixel = env.dist2pixellen(eigenvals[0]), env.dist2pixellen(eigenvals[1])
-    show_uncertainty_ellipse(env,p_pixel,sigma_pixel,angle)
+    p_pixel = env.position2pixel((rx,ry)) # Transform robot position to pygame surface pixel coordinates
+    eigenvals,angle = sigma2transform(sigma[0:2,0:2]) # Get eigenvalues and rotation angle
+    sigma_pixel = env.dist2pixellen(eigenvals[0]), env.dist2pixellen(eigenvals[1]) # Convert eigenvalue units from meters to pixels
+    show_uncertainty_ellipse(env,p_pixel,sigma_pixel,angle) # Show the ellipse
     
 def show_landmark_estimate(mu,sigma,env):
-    for lidx in range(n_landmarks):
+    '''
+    Visualize estimated position and uncertainty of a landmark
+    '''
+    for lidx in range(n_landmarks): # For each landmark location
         lx,ly,lsigma = mu[n_state+lidx*2], mu[n_state+lidx*2+1], sigma[n_state+lidx*2:n_state+lidx*2+2,n_state+lidx*2:n_state+lidx*2+2]
-        if ~np.isnan(lx):
-            p_pixel = env.position2pixel((lx,ly))
-            eigenvals,angle = sigma2transform(lsigma)
-            if np.max(eigenvals)<15:
-                sigma_pixel = max(env.dist2pixellen(eigenvals[0]),5), max(env.dist2pixellen(eigenvals[1]),5)
-                show_uncertainty_ellipse(env,p_pixel,sigma_pixel,angle)
+        if ~np.isnan(lx): # If the landmark has been observed
+            p_pixel = env.position2pixel((lx,ly)) # Transform landmark location to pygame surface pixel coordinates
+            eigenvals,angle = sigma2transform(lsigma) # Get eigenvalues and rotation angle of covariance of landmark
+            if np.max(eigenvals)<15: # Only visualize when the maximum uncertainty is below some threshold
+                sigma_pixel = max(env.dist2pixellen(eigenvals[0]),5), max(env.dist2pixellen(eigenvals[1]),5) # Convert eigenvalue units from meters to pixels
+                show_uncertainty_ellipse(env,p_pixel,sigma_pixel,angle) # Show the ellipse
 
 def show_landmark_location(landmarks,env):
+    '''
+    Visualize actual landmark location
+    '''
     for landmark in landmarks:
         lx_pixel, ly_pixel = env.position2pixel(landmark)
-        r_pixel = env.dist2pixellen(0.2)
-        pygame.gfxdraw.filled_circle(env.get_pygame_surface(),lx_pixel,ly_pixel,r_pixel,(0,255,255))
+        r_pixel = env.dist2pixellen(0.2) # Radius of the circle for the ground truth locations of the landmarks
+        pygame.gfxdraw.filled_circle(env.get_pygame_surface(),lx_pixel,ly_pixel,r_pixel,(0,255,255)) # Blit the circle onto the surface
 
 def show_measurements(x,zs,env):
+    '''
+    Visualize measurements the occur between the robot and landmarks
+    '''
     rx,ry = x[0], x[1]
-    rx_pix, ry_pix = env.position2pixel((rx,ry))
-    for z in zs:
-        dist,theta,lidx = z
-        lx,ly = x[0]+dist*np.cos(theta+x[2]),x[1]+dist*np.sin(theta+x[2])
-        lx_pix,ly_pix = env.position2pixel((lx,ly))
-        pygame.gfxdraw.line(env.get_pygame_surface(),rx_pix,ry_pix,lx_pix,ly_pix,(155,155,155))
+    rx_pix, ry_pix = env.position2pixel((rx,ry)) # Convert robot position units from meters to pixels
+    for z in zs: # For each measurement
+        dist,theta,lidx = z # Unpack measurement tuple
+        lx,ly = x[0]+dist*np.cos(theta+x[2]),x[1]+dist*np.sin(theta+x[2]) # Set the observed landmark location (lx,ly)
+        lx_pix,ly_pix = env.position2pixel((lx,ly)) # Convert observed landmark location units from meters to pixels
+        pygame.gfxdraw.line(env.get_pygame_surface(),rx_pix,ry_pix,lx_pix,ly_pix,(155,155,155)) # Draw a line between robot and observed landmark
 
 def sigma2transform(sigma):
-    [eigenvals,eigenvecs] = np.linalg.eig(sigma)
-    angle = 180.*np.arctan2(eigenvecs[1][0],eigenvecs[0][0])/np.pi
+    '''
+    Finds the transform for a covariance matrix, to be used for visualizing the uncertainty ellipse
+    '''
+    [eigenvals,eigenvecs] = np.linalg.eig(sigma) # Finding eigenvalues and eigenvectors of the covariance matrix
+    angle = 180.*np.arctan2(eigenvecs[1][0],eigenvecs[0][0])/np.pi # Find the angle of rotation for the first eigenvalue
     return eigenvals, angle
 
 def show_uncertainty_ellipse(env,center,width,angle):
+    '''
+    Visualize an uncertainty ellipse
+    Adapted from: https://stackoverflow.com/questions/65767785/how-to-draw-a-rotated-ellipse-using-pygame
+    '''
     target_rect = pygame.Rect(center[0]-int(width[0]/2),center[1]-int(width[1]/2),width[0],width[1])
     shape_surf = pygame.Surface(target_rect.size, pygame.SRCALPHA)
     pygame.draw.ellipse(shape_surf, env.red, (0, 0, *target_rect.size), 2)
     rotated_surf = pygame.transform.rotate(shape_surf, angle)
     env.get_pygame_surface().blit(rotated_surf, rotated_surf.get_rect(center = target_rect.center))
 
+# <------------------------- PLOTTING STUFF --------------------------------->
+
 if __name__ == '__main__':
 
     # Initialize pygame
     pygame.init()
     
-    # Initialize robot and time step
+    # Initialize robot and discretization time step
     x_init = np.array([1,1,np.pi/2]) # px, py, theta
-    robot = vehicles.DifferentialDrive(x_init)#; robot.max_v = 4.0
+    robot = vehicles.DifferentialDrive(x_init)
     dt = 0.01
 
     # Initialize and display environment
@@ -237,10 +262,10 @@ if __name__ == '__main__':
         # Move the robot
         robot.move_step(u,dt) # Integrate EOMs forward, i.e., move robot
         # Get measurements
-        zs = sim_measurement(robot.get_pose(),landmarks)
+        zs = sim_measurement(robot.get_pose(),landmarks) # Simulate measurements between robot and landmarks
         # EKF Slam Logic
-        mu, sigma = prediction_update(mu,sigma,u,dt)
-        mu, sigma = measurement_update(mu,sigma,zs)
+        mu, sigma = prediction_update(mu,sigma,u,dt) # Perform EKF prediction update
+        mu, sigma = measurement_update(mu,sigma,zs) # Perform EKF measurement update
         # Plotting
         env.show_map() # Re-blit map
         # Show measurements
